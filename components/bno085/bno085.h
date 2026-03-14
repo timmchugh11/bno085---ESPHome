@@ -1,8 +1,7 @@
 #pragma once
 
-#ifdef USE_ARDUINO
-#include "Adafruit_BNO08x/src/Adafruit_BNO08x.h"
-#endif
+#include "sh2.h"
+#include "sh2_SensorValue.h"
 
 #include "esphome/components/i2c/i2c.h"
 #include "esphome/components/sensor/sensor.h"
@@ -39,15 +38,31 @@ class BNO085Component : public PollingComponent, public i2c::I2CDevice {
 
  protected:
   void enable_reports_();
-#ifdef USE_ARDUINO
   void handle_sensor_event_(const sh2_SensorValue_t &value);
   void publish_rotation_vector_(const sh2_SensorValue_t &value);
   void publish_accelerometer_(const sh2_SensorValue_t &value);
   void publish_gyroscope_(const sh2_SensorValue_t &value);
 
-  Adafruit_BNO08x bno08x_ = Adafruit_BNO08x(-1);
-#endif
+  static int hal_open_(sh2_Hal_t *self);
+  static void hal_close_(sh2_Hal_t *self);
+  static int hal_read_(sh2_Hal_t *self, uint8_t *buffer, unsigned len, uint32_t *timestamp_us);
+  static int hal_write_(sh2_Hal_t *self, uint8_t *buffer, unsigned len);
+  static uint32_t hal_get_time_us_(sh2_Hal_t *self);
+
+  static void async_event_callback_(void *cookie, sh2_AsyncEvent_t *event);
+  static void sensor_event_callback_(void *cookie, sh2_SensorEvent_t *event);
+
+  void on_async_event_(const sh2_AsyncEvent_t &event);
+  void on_sensor_event_(const sh2_SensorEvent_t &event);
+
+  static BNO085Component *active_instance_;
+
+  sh2_Hal_t hal_{};
   bool initialized_{false};
+  bool reset_occurred_{false};
+
+  static constexpr uint16_t I2C_CHUNK_SIZE = 32;
+  uint8_t i2c_chunk_buffer_[I2C_CHUNK_SIZE]{};
 
   uint32_t rotation_vector_interval_ms_{50};
   uint32_t accelerometer_interval_ms_{50};

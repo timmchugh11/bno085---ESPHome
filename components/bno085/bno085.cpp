@@ -2,7 +2,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
+#ifdef USE_ESP32
+#include <esp_timer.h>
+#endif
+
+#include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 
 namespace esphome {
@@ -11,39 +17,62 @@ namespace bno085 {
 static const char *const TAG = "bno085";
 static constexpr float RAD_TO_DEG = 57.29577951308232f;
 
+BNO085Component *BNO085Component::active_instance_ = nullptr;
+
 void BNO085Component::setup() {
-#ifdef USE_ARDUINO
-  if (!this->bno08x_.begin_I2C(this->address_)) {
-    ESP_LOGE(TAG, "Failed to initialize BNO085 at address 0x%02X", this->address_);
+  active_instance_ = this;
+
+  this->hal_.open = &BNO085Component::hal_open_;
+  this->hal_.close = &BNO085Component::hal_close_;
+  this->hal_.read = &BNO085Component::hal_read_;
+  this->hal_.write = &BNO085Component::hal_write_;
+  this->hal_.getTimeUs = &BNO085Component::hal_get_time_us_;
+
+  int status = sh2_open(&this->hal_, &BNO085Component::async_event_callback_, this);
+  if (status != SH2_OK) {
+    ESP_LOGE(TAG, "Failed to open SH2 session, status=%d", status);
+    this->mark_failed();
+    return;
+  }
+
+  sh2_ProductIds_t prod_ids;
+  std::memset(&prod_ids, 0, sizeof(prod_ids));
+  status = sh2_getProdIds(&prod_ids);
+  if (status != SH2_OK) {
+    ESP_LOGE(TAG, "Failed to read product IDs, status=%d", status);
+    sh2_close();
+    this->mark_failed();
+    return;
+  }
+
+  status = sh2_setSensorCallback(&BNO085Component::sensor_event_callback_, this);
+  if (status != SH2_OK) {
+    ESP_LOGE(TAG, "Failed to register sensor callback, status=%d", status);
+    sh2_close();
     this->mark_failed();
     return;
   }
 
   this->initialized_ = true;
   this->enable_reports_();
-  ESP_LOGI(TAG, "BNO085 initialized");
-#else
-  ESP_LOGE(TAG, "BNO085 component currently requires Arduino framework");
-  this->mark_failed();
-#endif
+  ESP_LOGI(TAG, "BNO085 initialized using native SH2 HAL");
 }
 
 void BNO085Component::update() {
-#ifdef USE_ARDUINO
   if (!this->initialized_) {
     return;
   }
 
-  if (this->bno08x_.wasReset()) {
+  if (this->reset_occurred_) {
+    this->reset_occurred_ = false;
     ESP_LOGW(TAG, "BNO085 reset detected, re-enabling reports");
     this->enable_reports_();
   }
 
-  sh2_SensorValue_t sensor_value;
-  while (this->bno08x_.getSensorEvent(&sensor_value)) {
-    this->handle_sensor_event_(sensor_value);
+  // Service SH2 repeatedly to drain any pending packets from the transport.
+  for (uint8_t i = 0; i < 6; i++) {
+    sh2_service();
   }
-#endif
 }
 
 void BNO085Component::dump_config() {
@@ -62,10 +91,18 @@ void BNO085Component::dump_config() {
 }
 
 void BNO085Component::enable_reports_() {
-#ifdef USE_ARDUINO
   if (!this->initialized_) {
     return;
   }
+
+  sh2_SensorConfig_t config{};
+  config.changeSensitivityEnabled = false;
+  config.wakeupEnabled = false;
+  config.changeSensitivityRelative = false;
+  config.alwaysOnEnabled = false;
+  config.changeSensitivity = 0;
+  config.batchInterval_us = 0;
+  config.sensorSpecific = 0;
 
   const uint32_t rotation_us = this->rotation_vector_interval_ms_ * 1000UL;
   const uint32_t accel_us = this->accelerometer_interval_ms_ * 1000UL;
@@ -73,22 +110,29 @@ void BNO085Component::enable_reports_() {
 
   if ((this->roll_sensor_ != nullptr) || (this->pitch_sensor_ != nullptr) ||
       (this->yaw_sensor_ != nullptr)) {
-    this->bno08x_.enableReport(SH2_ROTATION_VECTOR, rotation_us);
+    config.reportInterval_us = rotation_us;
+    if (sh2_setSensorConfig(SH2_ROTATION_VECTOR, &config) != SH2_OK) {
+      ESP_LOGW(TAG, "Failed to configure SH2_ROTATION_VECTOR");
+    }
   }
 
   if ((this->accel_x_sensor_ != nullptr) || (this->accel_y_sensor_ != nullptr) ||
       (this->accel_z_sensor_ != nullptr)) {
-    this->bno08x_.enableReport(SH2_ACCELEROMETER, accel_us);
+    config.reportInterval_us = accel_us;
+    if (sh2_setSensorConfig(SH2_ACCELEROMETER, &config) != SH2_OK) {
+      ESP_LOGW(TAG, "Failed to configure SH2_ACCELEROMETER");
+    }
   }
 
   if ((this->gyro_x_sensor_ != nullptr) || (this->gyro_y_sensor_ != nullptr) ||
       (this->gyro_z_sensor_ != nullptr)) {
-    this->bno08x_.enableReport(SH2_GYROSCOPE_CALIBRATED, gyro_us);
+    config.reportInterval_us = gyro_us;
+    if (sh2_setSensorConfig(SH2_GYROSCOPE_CALIBRATED, &config) != SH2_OK) {
+      ESP_LOGW(TAG, "Failed to configure SH2_GYROSCOPE_CALIBRATED");
+    }
   }
-#endif
 }
 
-#ifdef USE_ARDUINO
 void BNO085Component::handle_sensor_event_(const sh2_SensorValue_t &value) {
   switch (value.sensorId) {
     case SH2_ROTATION_VECTOR:
@@ -157,7 +201,142 @@ void BNO085Component::publish_gyroscope_(const sh2_SensorValue_t &value) {
     this->gyro_z_sensor_->publish_state(value.un.gyroscope.z * RAD_TO_DEG);
   }
 }
+
+int BNO085Component::hal_open_(sh2_Hal_t *self) {
+  (void) self;
+  auto *inst = active_instance_;
+  if (inst == nullptr) {
+    return -1;
+  }
+
+  const uint8_t softreset_pkt[] = {5, 0, 1, 0, 1};
+  bool success = false;
+  for (uint8_t attempts = 0; attempts < 5; attempts++) {
+    if (inst->write(softreset_pkt, sizeof(softreset_pkt)) == i2c::ERROR_OK) {
+      success = true;
+      break;
+    }
+    delay_microseconds_safe(30000);
+  }
+
+  if (!success) {
+    return -1;
+  }
+
+  delay_microseconds_safe(300000);
+  return 0;
+}
+
+void BNO085Component::hal_close_(sh2_Hal_t *self) { (void) self; }
+
+int BNO085Component::hal_read_(sh2_Hal_t *self, uint8_t *buffer, unsigned len, uint32_t *timestamp_us) {
+  (void) self;
+  auto *inst = active_instance_;
+  if (inst == nullptr || buffer == nullptr || len == 0) {
+    return 0;
+  }
+
+  if (timestamp_us != nullptr) {
+    *timestamp_us = hal_get_time_us_(self);
+  }
+
+  uint8_t header[4];
+  if (inst->read(header, sizeof(header)) != i2c::ERROR_OK) {
+    return 0;
+  }
+
+  uint16_t packet_size = static_cast<uint16_t>(header[0]) | (static_cast<uint16_t>(header[1]) << 8);
+  packet_size &= static_cast<uint16_t>(~0x8000);
+
+  if (packet_size == 0 || packet_size > len) {
+    return 0;
+  }
+
+  uint16_t cargo_remaining = packet_size;
+  bool first_read = true;
+
+  while (cargo_remaining > 0) {
+    uint16_t read_size;
+    if (first_read) {
+      read_size = std::min<uint16_t>(I2C_CHUNK_SIZE, cargo_remaining);
+    } else {
+      read_size = std::min<uint16_t>(I2C_CHUNK_SIZE, static_cast<uint16_t>(cargo_remaining + 4));
+    }
+
+    if (inst->read(inst->i2c_chunk_buffer_, read_size) != i2c::ERROR_OK) {
+      return 0;
+    }
+
+    uint16_t copied;
+    if (first_read) {
+      copied = read_size;
+      std::memcpy(buffer, inst->i2c_chunk_buffer_, copied);
+      first_read = false;
+    } else {
+      copied = read_size - 4;
+      std::memcpy(buffer, inst->i2c_chunk_buffer_ + 4, copied);
+    }
+
+    buffer += copied;
+    cargo_remaining -= copied;
+  }
+
+  return static_cast<int>(packet_size);
+}
+
+int BNO085Component::hal_write_(sh2_Hal_t *self, uint8_t *buffer, unsigned len) {
+  (void) self;
+  auto *inst = active_instance_;
+  if (inst == nullptr || buffer == nullptr || len == 0) {
+    return 0;
+  }
+
+  const uint16_t write_size = std::min<uint16_t>(I2C_CHUNK_SIZE, static_cast<uint16_t>(len));
+  if (inst->write(buffer, write_size) != i2c::ERROR_OK) {
+    return 0;
+  }
+
+  return static_cast<int>(write_size);
+}
+
+uint32_t BNO085Component::hal_get_time_us_(sh2_Hal_t *self) {
+  (void) self;
+#ifdef USE_ESP32
+  return static_cast<uint32_t>(esp_timer_get_time());
+#else
+  return 0;
 #endif
+}
+
+void BNO085Component::async_event_callback_(void *cookie, sh2_AsyncEvent_t *event) {
+  if (cookie == nullptr || event == nullptr) {
+    return;
+  }
+  static_cast<BNO085Component *>(cookie)->on_async_event_(*event);
+}
+
+void BNO085Component::sensor_event_callback_(void *cookie, sh2_SensorEvent_t *event) {
+  if (cookie == nullptr || event == nullptr) {
+    return;
+  }
+  static_cast<BNO085Component *>(cookie)->on_sensor_event_(*event);
+}
+
+void BNO085Component::on_async_event_(const sh2_AsyncEvent_t &event) {
+  if (event.eventId == SH2_RESET) {
+    this->reset_occurred_ = true;
+  }
+}
+
+void BNO085Component::on_sensor_event_(const sh2_SensorEvent_t &event) {
+  sh2_SensorValue_t value{};
+  const int rc = sh2_decodeSensorEvent(&value, &event);
+  if (rc != SH2_OK) {
+    return;
+  }
+
+  this->handle_sensor_event_(value);
+}
 
 }  // namespace bno085
 }  // namespace esphome

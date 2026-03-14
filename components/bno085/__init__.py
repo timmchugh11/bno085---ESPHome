@@ -7,7 +7,6 @@ from esphome.const import (
     UNIT_DEGREES,
     UNIT_METER_PER_SECOND_SQUARED,
 )
-from esphome.core import CORE
 
 CODEOWNERS = ["@timmchugh11"]
 DEPENDENCIES = ["i2c"]
@@ -79,15 +78,6 @@ CONFIG_SCHEMA = (
 
 
 async def to_code(config):
-    if not CORE.using_arduino:
-        raise cv.Invalid(
-            "bno085 requires Arduino framework. Set esp32.framework.type: arduino."
-        )
-
-    cg.add_library("adafruit/Adafruit Unified Sensor", "^1.1.15")
-    cg.add_library("adafruit/Adafruit BusIO", "^1.16.1")
-    cg.add_library("adafruit/Adafruit BNO08x", "^1.2.5")
-
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
     await i2c.register_i2c_device(var, config)
