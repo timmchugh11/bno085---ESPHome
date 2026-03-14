@@ -1,6 +1,6 @@
 #pragma once
 
-#include <Adafruit_BNO08x.h>
+#include "Adafruit_BNO08x/src/Adafruit_BNO08x.h"
 
 #include "esphome/components/i2c/i2c.h"
 #include "esphome/components/sensor/sensor.h"

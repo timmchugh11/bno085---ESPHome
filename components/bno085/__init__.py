@@ -78,6 +78,8 @@ CONFIG_SCHEMA = (
 
 
 async def to_code(config):
+    cg.add_library("adafruit/Adafruit Unified Sensor", "^1.1.15")
+    cg.add_library("adafruit/Adafruit BusIO", "^1.16.1")
     cg.add_library("adafruit/Adafruit BNO08x", "^1.2.5")
 
     var = cg.new_Pvariable(config[CONF_ID])
