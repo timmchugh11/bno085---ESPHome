@@ -1,15 +1,7 @@
 #pragma once
 
 #ifdef USE_ARDUINO
-#if __has_include(<Adafruit_BNO08x.h>)
-#include <Adafruit_BNO08x.h>
-#elif __has_include("Adafruit_BNO08x/src/Adafruit_BNO08x.h")
 #include "Adafruit_BNO08x/src/Adafruit_BNO08x.h"
-#elif __has_include("Adafruit_BNO08x.h")
-#include "Adafruit_BNO08x.h"
-#else
-#error "Adafruit_BNO08x header not found. Install adafruit/Adafruit BNO08x or vendor it locally."
-#endif
 #endif
 
 #include "esphome/components/i2c/i2c.h"
