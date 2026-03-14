@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sh2.h"
+#include "sh2_err.h"
 #include "sh2_SensorValue.h"
 
 #include "esphome/components/i2c/i2c.h"
