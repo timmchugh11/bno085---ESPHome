@@ -1,6 +1,16 @@
 #pragma once
 
+#ifdef USE_ARDUINO
+#if __has_include(<Adafruit_BNO08x.h>)
+#include <Adafruit_BNO08x.h>
+#elif __has_include("Adafruit_BNO08x/src/Adafruit_BNO08x.h")
 #include "Adafruit_BNO08x/src/Adafruit_BNO08x.h"
+#elif __has_include("Adafruit_BNO08x.h")
+#include "Adafruit_BNO08x.h"
+#else
+#error "Adafruit_BNO08x header not found. Install adafruit/Adafruit BNO08x or vendor it locally."
+#endif
+#endif
 
 #include "esphome/components/i2c/i2c.h"
 #include "esphome/components/sensor/sensor.h"
@@ -37,12 +47,14 @@ class BNO085Component : public PollingComponent, public i2c::I2CDevice {
 
  protected:
   void enable_reports_();
+#ifdef USE_ARDUINO
   void handle_sensor_event_(const sh2_SensorValue_t &value);
   void publish_rotation_vector_(const sh2_SensorValue_t &value);
   void publish_accelerometer_(const sh2_SensorValue_t &value);
   void publish_gyroscope_(const sh2_SensorValue_t &value);
 
   Adafruit_BNO08x bno08x_ = Adafruit_BNO08x(-1);
+#endif
   bool initialized_{false};
 
   uint32_t rotation_vector_interval_ms_{50};

@@ -62,6 +62,7 @@ void BNO085Component::dump_config() {
 }
 
 void BNO085Component::enable_reports_() {
+#ifdef USE_ARDUINO
   if (!this->initialized_) {
     return;
   }
@@ -84,8 +85,10 @@ void BNO085Component::enable_reports_() {
       (this->gyro_z_sensor_ != nullptr)) {
     this->bno08x_.enableReport(SH2_GYROSCOPE_CALIBRATED, gyro_us);
   }
+#endif
 }
 
+#ifdef USE_ARDUINO
 void BNO085Component::handle_sensor_event_(const sh2_SensorValue_t &value) {
   switch (value.sensorId) {
     case SH2_ROTATION_VECTOR:
@@ -154,6 +157,7 @@ void BNO085Component::publish_gyroscope_(const sh2_SensorValue_t &value) {
     this->gyro_z_sensor_->publish_state(value.un.gyroscope.z * RAD_TO_DEG);
   }
 }
+#endif
 
 }  // namespace bno085
 }  // namespace esphome
